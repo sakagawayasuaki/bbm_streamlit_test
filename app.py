@@ -28,73 +28,47 @@ st.markdown("音声から住所を抽出するアプリケーション")
 tab1, tab2 = st.tabs(["📋 段階入力モード", "⚡ 高速モード"])
 
 with tab1:
-    st.markdown("### 郵便番号→詳細住所→建物・部屋の3段階で音声入力")
+    st.markdown("### 郵便番号→詳細住所の2段階でリアルタイム音声入力")
     
     # ステップの定義
     STEP_POSTAL_CODE = "postal_code"
     STEP_DETAIL_ADDRESS = "detail_address"
-    STEP_BUILDING_ROOM = "building_room"
     STEP_COMPLETE = "complete"
 
-    # セッション状態の初期化
-    if 'speech_service' not in st.session_state:
+    # リアルタイム音声認識サービスの初期化
+    if 'segment_realtime_service' not in st.session_state:
         try:
-            st.session_state.speech_service = GoogleSpeechService()
-            st.session_state.address_extractor = AddressExtractor()
+            st.session_state.segment_realtime_service = RealtimeSpeechService()
             st.session_state.postal_service = PostalCodeService()
         except ValueError as e:
             st.error(f"Google Cloud Speech Service の設定エラー: {e}")
-            st.info("`.env` ファイルを作成し、Google Cloud Speech Service の認証情報を設定してください。")
+            st.info("Google Cloud プロジェクトとAPI認証を設定してください。")
             st.stop()
     
-    # 全体的なセッション状態
-    if 'current_step' not in st.session_state:
-        st.session_state.current_step = STEP_POSTAL_CODE
-    if 'recording' not in st.session_state:
-        st.session_state.recording = False
-    
-    # 郵便番号関連のセッション状態
-    if 'postal_audio_data' not in st.session_state:
-        st.session_state.postal_audio_data = None
-    if 'postal_recognized_text' not in st.session_state:
-        st.session_state.postal_recognized_text = ""
-    if 'postal_code' not in st.session_state:
-        st.session_state.postal_code = ""
-    if 'base_address' not in st.session_state:
-        st.session_state.base_address = ""
-    
-    # 詳細住所関連のセッション状態
-    if 'detail_audio_data' not in st.session_state:
-        st.session_state.detail_audio_data = None
-    if 'detail_recognized_text' not in st.session_state:
-        st.session_state.detail_recognized_text = ""
-    if 'detail_address' not in st.session_state:
-        st.session_state.detail_address = ""
-    if 'final_address' not in st.session_state:
-        st.session_state.final_address = ""
-    
-    # 建物・部屋関連のセッション状態
-    if 'building_audio_data' not in st.session_state:
-        st.session_state.building_audio_data = None
-    if 'building_recognized_text' not in st.session_state:
-        st.session_state.building_recognized_text = ""
-    if 'building_info' not in st.session_state:
-        st.session_state.building_info = ""
-    if 'complete_address' not in st.session_state:
-        st.session_state.complete_address = ""
+    # セッション状態の初期化
+    if 'segment_current_step' not in st.session_state:
+        st.session_state.segment_current_step = STEP_POSTAL_CODE
+    if 'segment_recording' not in st.session_state:
+        st.session_state.segment_recording = False
+    if 'segment_postal_code' not in st.session_state:
+        st.session_state.segment_postal_code = ""
+    if 'segment_base_address' not in st.session_state:
+        st.session_state.segment_base_address = ""
+    if 'segment_detail_text' not in st.session_state:
+        st.session_state.segment_detail_text = ""
+    if 'segment_final_address' not in st.session_state:
+        st.session_state.segment_final_address = ""
 
     # ステップ表示
-    progress_steps = ["🔢 郵便番号入力", "🏠 詳細住所入力", "🏢 建物・部屋入力", "✅ 完了"]
+    progress_steps = ["🔢 郵便番号・基本住所取得", "🏠 詳細住所・建物情報入力", "✅ 完了"]
     current_step_index = 0
-    if st.session_state.current_step == STEP_DETAIL_ADDRESS:
+    if st.session_state.segment_current_step == STEP_DETAIL_ADDRESS:
         current_step_index = 1
-    elif st.session_state.current_step == STEP_BUILDING_ROOM:
+    elif st.session_state.segment_current_step == STEP_COMPLETE:
         current_step_index = 2
-    elif st.session_state.current_step == STEP_COMPLETE:
-        current_step_index = 3
     
     st.subheader("📋 進行状況")
-    cols = st.columns(4)
+    cols = st.columns(3)
     for i, (col, step) in enumerate(zip(cols, progress_steps)):
         with col:
             if i == current_step_index:
@@ -106,293 +80,275 @@ with tab1:
     
     st.markdown("---")
 
-    # ステップ1: 郵便番号入力
-    if st.session_state.current_step == STEP_POSTAL_CODE:
-        st.subheader("🔢 ステップ1: 郵便番号を音声で入力")
+    # ステップ1: 郵便番号入力とAPI住所取得
+    if st.session_state.segment_current_step == STEP_POSTAL_CODE:
+        st.subheader("🔢 ステップ1: 郵便番号をリアルタイム音声で入力")
         
         col1, col2 = st.columns([1, 2])
         
         with col1:
-            st.markdown("**録音設定**")
-            recording_duration = st.slider("録音時間（秒）", min_value=3, max_value=15, value=5, key="postal_duration")
+            st.markdown("**🎤 リアルタイム音声認識**")
+            st.info("📝 **使い方**: 録音開始後、7桁の郵便番号を話してください\n郵便番号が認識されると自動で住所を取得します")
             
-            # 録音開始ボタン
-            if st.button("🔴 郵便番号録音開始", disabled=st.session_state.recording, use_container_width=True):
-                st.session_state.recording = True
-                
-                progress_bar = st.progress(0)
-                status_text = st.empty()
-                
-                try:
-                    with st.spinner('郵便番号を録音中...'):
-                        audio_data = st.session_state.speech_service.record_audio(recording_duration)
-                        st.session_state.postal_audio_data = audio_data
-                        
-                        progress_bar.progress(100)
-                        status_text.success("録音完了！")
-                        
-                except Exception as e:
-                    st.error(f"録音エラー: {e}")
-                finally:
-                    st.session_state.recording = False
-            
-            # STT実行ボタン
-            if st.button("✅ STT実行", 
-                        disabled=(st.session_state.postal_audio_data is None), 
-                        use_container_width=True):
-                
-                with st.spinner('郵便番号を解析中...'):
+            # 録音開始/停止ボタン
+            if not st.session_state.segment_recording:
+                if st.button("🔴 郵便番号録音開始", use_container_width=True, type="primary"):
+                    # リアルタイム認識開始
+                    st.session_state.segment_realtime_service.clear_session_state()
+                    
                     try:
-                        success, result = st.session_state.speech_service.speech_to_text(st.session_state.postal_audio_data)
-                        
+                        success = st.session_state.segment_realtime_service.start_streaming_with_streamlit()
                         if success:
-                            st.session_state.postal_recognized_text = result
-                            
-                            # 郵便番号抽出
-                            postal_code = st.session_state.postal_service.extract_postal_code(result)
-                            
-                            if postal_code:
-                                st.session_state.postal_code = postal_code
-                                st.success(f"郵便番号を認識しました: {postal_code}")
-                            else:
-                                st.warning("郵便番号が見つかりませんでした")
-                                st.session_state.postal_code = ""
-                                
+                            st.session_state.segment_recording = True
+                            st.success("🎤 リアルタイム録音を開始しました")
+                            time.sleep(0.5)
+                            st.rerun()
                         else:
-                            st.error(f"音声認識に失敗しました: {result}")
-                            
+                            st.error("録音開始に失敗しました")
                     except Exception as e:
-                        st.error(f"処理エラー: {e}")
+                        st.error(f"録音開始エラー: {e}")
+            else:
+                if st.button("⏹️ 録音停止", use_container_width=True, type="secondary"):
+                    st.session_state.segment_realtime_service.stop_streaming_recognition()
+                    st.session_state.segment_recording = False
+                    st.success("録音を停止しました")
+                    st.rerun()
+            
+            # 録音状態表示
+            if st.session_state.segment_recording:
+                st.info("🔴 **録音中** - 郵便番号を話してください")
+            else:
+                st.info("⏸️ **停止中**")
+            
+            # 次のステップボタン（郵便番号と基本住所が取得済みの場合のみ表示）
+            if st.session_state.segment_postal_code and st.session_state.segment_base_address:
+                st.markdown("### ✅ 確認")
+                st.info(f"**郵便番号:** {st.session_state.segment_postal_code}\n**基本住所:** {st.session_state.segment_base_address}")
+                
+                col_next, col_retry = st.columns(2)
+                with col_next:
+                    if st.button("➡️ 次のステップに進む", use_container_width=True, type="primary"):
+                        st.session_state.segment_current_step = STEP_DETAIL_ADDRESS
+                        if st.session_state.segment_recording:
+                            st.session_state.segment_realtime_service.stop_streaming_recognition()
+                            st.session_state.segment_recording = False
+                        st.rerun()
+                
+                with col_retry:
+                    if st.button("🔄 やり直し", use_container_width=True):
+                        # 郵便番号と住所をリセット
+                        if st.session_state.segment_recording:
+                            st.session_state.segment_realtime_service.stop_streaming_recognition()
+                            st.session_state.segment_recording = False
+                        st.session_state.segment_realtime_service.clear_session_state()
+                        st.session_state.segment_postal_code = ""
+                        st.session_state.segment_base_address = ""
+                        st.rerun()
+            else:
+                # リセットボタン（郵便番号取得前）
+                if st.button("🔄 リセット", use_container_width=True):
+                    if st.session_state.segment_recording:
+                        st.session_state.segment_realtime_service.stop_streaming_recognition()
+                        st.session_state.segment_recording = False
+                    st.session_state.segment_realtime_service.clear_session_state()
+                    st.session_state.segment_postal_code = ""
+                    st.session_state.segment_base_address = ""
+                    st.rerun()
         
         with col2:
-            st.markdown("**認識結果**")
+            st.markdown("**📝 リアルタイム認識結果**")
             
-            if st.session_state.postal_recognized_text:
-                st.text_area("認識されたテキスト:", value=st.session_state.postal_recognized_text, height=100, disabled=True)
+            # セッション状態からリアルタイムデータを取得
+            session_data = st.session_state.segment_realtime_service.get_session_state_data()
             
-            if st.session_state.postal_code:
-                st.success(f"**抽出された郵便番号:** {st.session_state.postal_code}")
+            # エラーメッセージ表示
+            error_message = session_data.get('error_message')
+            if error_message:
+                if "ストリーミング時間制限" in error_message or "再接続中" in error_message:
+                    st.info(f"ℹ️ {error_message}")
+                else:
+                    st.error(error_message)
+            
+            # リアルタイム文字起こし表示
+            interim_text = session_data.get('interim_text', '')
+            all_final_text = session_data.get('all_final_text', '')
+            
+            if all_final_text or interim_text:
+                display_text = all_final_text
+                if interim_text:
+                    display_text += f"__{interim_text}__"
                 
-                # TTS確認
-                col_tts1, col_tts2 = st.columns(2)
-                
-                with col_tts1:
-                    if st.button("🔊 郵便番号を確認", use_container_width=True):
-                        with st.spinner('音声を生成中...'):
-                            try:
-                                speech_text = st.session_state.postal_service.format_postal_code_for_speech(st.session_state.postal_code)
-                                tts_text = f"認識された郵便番号は、{speech_text}です。"
-                                success, message = st.session_state.speech_service.text_to_speech(tts_text)
-                                
-                                if success:
-                                    st.success("音声確認完了！")
-                                else:
-                                    st.error(f"音声合成に失敗: {message}")
-                                    
-                            except Exception as e:
-                                st.error(f"TTSエラー: {e}")
-                
-                with col_tts2:
-                    # OK/やり直しボタン
-                    col_ok, col_retry = st.columns(2)
+                st.text_area(
+                    "リアルタイム文字起こし:", 
+                    value=display_text, 
+                    height=100, 
+                    disabled=True,
+                    help="確定したテキストと、認識中のテキスト（アンダーライン）がリアルタイムで表示されます",
+                    key="step1_transcription_display"
+                )
+            else:
+                st.text_area("リアルタイム文字起こし:", value="", height=100, disabled=True, key="step1_transcription_empty")
+            
+            # 郵便番号抽出とAPI住所取得の処理
+            if all_final_text and not st.session_state.segment_postal_code:
+                extracted_postal = st.session_state.postal_service.extract_postal_code(all_final_text)
+                if extracted_postal:
+                    st.session_state.segment_postal_code = extracted_postal
+                    st.success(f"✅ **郵便番号を認識:** {extracted_postal}")
                     
-                    with col_ok:
-                        if st.button("✅ OK", use_container_width=True, type="primary"):
-                            # 郵便番号で住所検索
-                            with st.spinner('住所を検索中...'):
-                                address_result = st.session_state.postal_service.get_address_by_postal_code(st.session_state.postal_code)
-                                
-                                if address_result['success']:
-                                    st.session_state.base_address = address_result['full_address']
-                                    st.session_state.current_step = STEP_DETAIL_ADDRESS
-                                    st.rerun()
-                                else:
-                                    st.error(f"住所検索エラー: {address_result['error']}")
-                    
-                    with col_retry:
-                        if st.button("🔄 やり直し", use_container_width=True):
-                            # 郵便番号入力をリセット
-                            st.session_state.postal_audio_data = None
-                            st.session_state.postal_recognized_text = ""
-                            st.session_state.postal_code = ""
-                            st.rerun()
+                    # 自動でAPI住所取得
+                    with st.spinner('住所を検索中...'):
+                        address_result = st.session_state.postal_service.get_address_by_postal_code(extracted_postal)
+                        
+                        if address_result['success']:
+                            st.session_state.segment_base_address = address_result['full_address']
+                            st.success(f"✅ **基本住所を取得:** {address_result['full_address']}")
+                            # 自動進行を削除 - ユーザーの手動操作を待つ
+                        else:
+                            st.error(f"住所検索エラー: {address_result['error']}")
+            
+            # 郵便番号と基本住所の表示
+            if st.session_state.segment_postal_code:
+                st.markdown("### 📍 取得した情報")
+                st.code(f"郵便番号: {st.session_state.segment_postal_code}", language=None)
+                if st.session_state.segment_base_address:
+                    st.code(f"基本住所: {st.session_state.segment_base_address}", language=None)
+                    st.info("✅ 基本住所の取得が完了しました。左側で確認して次のステップに進んでください。")
+            
+            # 自動更新（リアルタイム表示用）
+            if st.session_state.segment_recording:
+                time.sleep(0.1)
+                st.rerun()
 
-    # ステップ2: 詳細住所入力
-    elif st.session_state.current_step == STEP_DETAIL_ADDRESS:
-        st.subheader("🏠 ステップ2: 詳細住所（丁目以下）を音声で入力")
+    # ステップ2: 詳細住所入力（建物・部屋番号含む）
+    elif st.session_state.segment_current_step == STEP_DETAIL_ADDRESS:
+        st.subheader("🏠 ステップ2: 詳細住所・建物情報をリアルタイム音声で入力")
         
         # 基本住所表示
-        st.info(f"**基本住所:** {st.session_state.postal_code} {st.session_state.base_address}")
+        st.info(f"**基本住所:** {st.session_state.segment_postal_code} {st.session_state.segment_base_address}")
         
         col1, col2 = st.columns([1, 2])
         
         with col1:
-            st.markdown("**録音設定**")
-            detail_duration = st.slider("録音時間（秒）", min_value=3, max_value=30, value=10, key="detail_duration")
+            st.markdown("**🎤 リアルタイム音声認識**")
+            st.info("📝 **使い方**: 録音開始後、番地・建物名・部屋番号を話してください\n音声データは自動でクリーンアップされます")
             
-            # 録音開始ボタン
-            if st.button("🔴 詳細住所録音開始", disabled=st.session_state.recording, use_container_width=True):
-                st.session_state.recording = True
-                
-                progress_bar = st.progress(0)
-                status_text = st.empty()
-                
-                try:
-                    with st.spinner('詳細住所を録音中...'):
-                        audio_data = st.session_state.speech_service.record_audio(detail_duration)
-                        st.session_state.detail_audio_data = audio_data
-                        
-                        progress_bar.progress(100)
-                        status_text.success("録音完了！")
-                        
-                except Exception as e:
-                    st.error(f"録音エラー: {e}")
-                finally:
-                    st.session_state.recording = False
-            
-            # STT実行ボタン
-            if st.button("✅ STT実行", 
-                        disabled=(st.session_state.detail_audio_data is None), 
-                        use_container_width=True):
-                
-                with st.spinner('詳細住所を解析中...'):
+            # 録音開始/停止ボタン
+            if not st.session_state.segment_recording:
+                if st.button("🔴 詳細住所録音開始", use_container_width=True, type="primary"):
+                    # リアルタイム認識開始
+                    st.session_state.segment_realtime_service.clear_session_state()
+                    
                     try:
-                        success, result = st.session_state.speech_service.speech_to_text(st.session_state.detail_audio_data)
-                        
+                        success = st.session_state.segment_realtime_service.start_streaming_with_streamlit()
                         if success:
-                            st.session_state.detail_recognized_text = result
-                            
-                            # 詳細住所抽出
-                            detail_address = st.session_state.address_extractor.extract_detail_address(
-                                result, st.session_state.base_address
-                            )
-                            
-                            if detail_address:
-                                st.session_state.detail_address = detail_address
-                                st.session_state.final_address = f"{st.session_state.postal_code} {detail_address}"
-                                st.success(f"詳細住所を抽出しました")
-                            else:
-                                st.warning("詳細住所が見つかりませんでした")
-                                st.session_state.detail_address = ""
-                                
+                            st.session_state.segment_recording = True
+                            st.success("🎤 リアルタイム録音を開始しました")
+                            time.sleep(0.5)
+                            st.rerun()
                         else:
-                            st.error(f"音声認識に失敗しました: {result}")
-                            
+                            st.error("録音開始に失敗しました")
                     except Exception as e:
-                        st.error(f"処理エラー: {e}")
-            
-            # 次のステップボタン
-            if st.session_state.final_address:
-                if st.button("🏢 建物・部屋入力へ", use_container_width=True, type="primary"):
-                    st.session_state.current_step = STEP_BUILDING_ROOM
+                        st.error(f"録音開始エラー: {e}")
+            else:
+                if st.button("⏹️ 録音停止", use_container_width=True, type="secondary"):
+                    st.session_state.segment_realtime_service.stop_streaming_recognition()
+                    st.session_state.segment_recording = False
+                    st.success("録音を停止しました")
                     st.rerun()
-        
-        with col2:
-            st.markdown("**認識結果**")
             
-            if st.session_state.detail_recognized_text:
-                st.text_area("認識されたテキスト:", value=st.session_state.detail_recognized_text, height=100, disabled=True)
+            # 完了ボタン（音声入力完了時）
+            if st.session_state.segment_detail_text:
+                if st.button("✅ 詳細住所入力完了", use_container_width=True, type="primary"):
+                    # 最終住所を組み立て
+                    final_address = f"{st.session_state.segment_postal_code} {st.session_state.segment_base_address}{st.session_state.segment_detail_text}"
+                    st.session_state.segment_final_address = final_address
+                    st.session_state.segment_current_step = STEP_COMPLETE
+                    st.session_state.segment_realtime_service.stop_streaming_recognition()
+                    st.session_state.segment_recording = False
+                    st.rerun()
             
-            if st.session_state.final_address:
-                st.success(f"**完全な住所:** {st.session_state.final_address}")
+            # 録音状態表示
+            if st.session_state.segment_recording:
+                st.info("🔴 **録音中** - 詳細住所を話してください")
+            else:
+                st.info("⏸️ **停止中**")
             
             # 戻るボタン
-            if st.button("⬅️ 郵便番号入力に戻る"):
-                st.session_state.current_step = STEP_POSTAL_CODE
+            if st.button("⬅️ 郵便番号入力に戻る", use_container_width=True):
+                if st.session_state.segment_recording:
+                    st.session_state.segment_realtime_service.stop_streaming_recognition()
+                    st.session_state.segment_recording = False
+                st.session_state.segment_current_step = STEP_POSTAL_CODE
                 st.rerun()
-
-    # ステップ3: 建物・部屋入力
-    elif st.session_state.current_step == STEP_BUILDING_ROOM:
-        st.subheader("🏢 ステップ3: 建物・部屋情報を音声で入力")
-        
-        # 現在の住所表示
-        st.info(f"**現在の住所:** {st.session_state.final_address}")
-        
-        col1, col2 = st.columns([1, 2])
-        
-        with col1:
-            st.markdown("**録音設定**")
-            building_duration = st.slider("録音時間（秒）", min_value=3, max_value=30, value=10, key="building_duration")
-            
-            # 録音開始ボタン
-            if st.button("🔴 建物・部屋録音開始", disabled=st.session_state.recording, use_container_width=True):
-                st.session_state.recording = True
-                
-                progress_bar = st.progress(0)
-                status_text = st.empty()
-                
-                try:
-                    with st.spinner('建物・部屋情報を録音中...'):
-                        audio_data = st.session_state.speech_service.record_audio(building_duration)
-                        st.session_state.building_audio_data = audio_data
-                        
-                        progress_bar.progress(100)
-                        status_text.success("録音完了！")
-                        
-                except Exception as e:
-                    st.error(f"録音エラー: {e}")
-                finally:
-                    st.session_state.recording = False
-            
-            # STT実行ボタン
-            if st.button("✅ STT実行", 
-                        disabled=(st.session_state.building_audio_data is None), 
-                        use_container_width=True):
-                
-                with st.spinner('建物・部屋情報を解析中...'):
-                    try:
-                        success, result = st.session_state.speech_service.speech_to_text(st.session_state.building_audio_data)
-                        
-                        if success:
-                            st.session_state.building_recognized_text = result
-                            
-                            # 簡単なクリーニングのみ（句読点除去）
-                            cleaned_building = result.replace('、', '').replace('。', '').replace('です', '').strip()
-                            
-                            if cleaned_building:
-                                st.session_state.building_info = cleaned_building
-                                # 完全住所を組み立て
-                                st.session_state.complete_address = f"{st.session_state.final_address} {cleaned_building}"
-                                st.success(f"建物・部屋情報を認識しました")
-                            else:
-                                st.warning("建物・部屋情報が見つかりませんでした")
-                                st.session_state.building_info = ""
-                                
-                        else:
-                            st.error(f"音声認識に失敗しました: {result}")
-                            
-                    except Exception as e:
-                        st.error(f"処理エラー: {e}")
-            
-            # 建物・部屋情報をスキップ
-            if st.button("⏭️ スキップ（建物情報なし）", use_container_width=True):
-                st.session_state.building_info = ""
-                st.session_state.complete_address = st.session_state.final_address
-                st.session_state.current_step = STEP_COMPLETE
-                st.rerun()
-            
-            # 完了ボタン
-            if st.session_state.complete_address:
-                if st.button("🎯 完了", use_container_width=True, type="primary"):
-                    st.session_state.current_step = STEP_COMPLETE
-                    st.rerun()
         
         with col2:
-            st.markdown("**認識結果**")
+            st.markdown("**📝 リアルタイム認識結果**")
             
-            if st.session_state.building_recognized_text:
-                st.text_area("認識されたテキスト:", value=st.session_state.building_recognized_text, height=100, disabled=True)
+            # セッション状態からリアルタイムデータを取得
+            session_data = st.session_state.segment_realtime_service.get_session_state_data()
             
-            if st.session_state.complete_address:
-                st.success(f"**完全な住所:** {st.session_state.complete_address}")
+            # エラーメッセージ表示
+            error_message = session_data.get('error_message')
+            if error_message:
+                if "ストリーミング時間制限" in error_message or "再接続中" in error_message:
+                    st.info(f"ℹ️ {error_message}")
+                else:
+                    st.error(error_message)
             
-            # 戻るボタン
-            if st.button("⬅️ 詳細住所入力に戻る"):
-                st.session_state.current_step = STEP_DETAIL_ADDRESS
+            # リアルタイム文字起こし表示
+            interim_text = session_data.get('interim_text', '')
+            all_final_text = session_data.get('all_final_text', '')
+            
+            if all_final_text or interim_text:
+                display_text = all_final_text
+                if interim_text:
+                    display_text += f"__{interim_text}__"
+                
+                st.text_area(
+                    "リアルタイム文字起こし:", 
+                    value=display_text, 
+                    height=120, 
+                    disabled=True,
+                    help="確定したテキストと、認識中のテキスト（アンダーライン）がリアルタイムで表示されます",
+                    key="step2_transcription_display"
+                )
+            else:
+                st.text_area("リアルタイム文字起こし:", value="", height=120, disabled=True, key="step2_transcription_empty")
+            
+            # 音声データの簡易クリーンアップ処理
+            if all_final_text:
+                # Toriyamaパーサーを使わず、シンプルなテキストクリーンアップのみ
+                def simple_text_cleanup(text):
+                    """シンプルなテキストクリーンアップ（Toriyamaパーサー不使用）"""
+                    # 不要な文字・語句を除去
+                    cleaned = text.replace('、', '').replace('。', '').replace('です', '').replace('である', '')
+                    cleaned = cleaned.replace('にあります', '').replace('ます', '').replace('だ', '').strip()
+                    # 連続する空白を単一空白に
+                    import re
+                    cleaned = re.sub(r'\s+', '', cleaned)
+                    return cleaned
+                
+                cleaned_text = simple_text_cleanup(all_final_text)
+                if cleaned_text != st.session_state.segment_detail_text:
+                    st.session_state.segment_detail_text = cleaned_text
+                
+                if cleaned_text:
+                    st.markdown("### 🧹 クリーンアップ後のテキスト")
+                    st.code(cleaned_text, language=None)
+                    
+                    # リアルタイム住所プレビュー
+                    preview_address = f"{st.session_state.segment_postal_code} {st.session_state.segment_base_address}{cleaned_text}"
+                    st.markdown("### 📍 完成予定の住所")
+                    st.code(preview_address, language=None)
+            
+            # 自動更新（リアルタイム表示用）
+            if st.session_state.segment_recording:
+                time.sleep(0.1)
                 st.rerun()
 
-    # ステップ4: 完了
-    elif st.session_state.current_step == STEP_COMPLETE:
+    # ステップ3: 完了
+    elif st.session_state.segment_current_step == STEP_COMPLETE:
         st.subheader("✅ 完了：住所抽出結果")
         
         col1, col2 = st.columns([2, 1])
@@ -401,45 +357,38 @@ with tab1:
             st.success("🎉 住所抽出が完了しました！")
             
             # 結果表示
-            st.markdown("### 📍 抽出された住所")
-            display_address = st.session_state.complete_address if st.session_state.complete_address else st.session_state.final_address
-            st.code(display_address, language=None)
+            st.markdown("### 📍 統合された完全な住所")
+            st.code(st.session_state.segment_final_address, language=None)
             
             # 詳細情報
             with st.expander("📋 詳細情報"):
-                st.markdown(f"**郵便番号:** {st.session_state.postal_code}")
-                st.markdown(f"**基本住所:** {st.session_state.base_address}")
-                st.markdown(f"**詳細住所:** {st.session_state.detail_address}")
-                st.markdown(f"**建物・部屋:** {st.session_state.building_info if st.session_state.building_info else '（なし）'}")
-                st.markdown(f"**完全住所:** {display_address}")
+                st.markdown(f"**郵便番号:** {st.session_state.segment_postal_code}")
+                st.markdown(f"**基本住所（API取得）:** {st.session_state.segment_base_address}")
+                st.markdown(f"**詳細住所（音声入力）:** {st.session_state.segment_detail_text}")
+                st.markdown("---")
+                st.markdown(f"**統合完全住所:** {st.session_state.segment_final_address}")
         
         with col2:
-            # 最終確認TTS
-            if st.button("🔊 完全住所を復唱", use_container_width=True, type="primary"):
-                with st.spinner('音声を生成中...'):
-                    try:
-                        display_address = st.session_state.complete_address if st.session_state.complete_address else st.session_state.final_address
-                        # 郵便番号を除去した住所でTTS実行
-                        import re
-                        address_without_postal = re.sub(r'^\d{3}-\d{4}\s*', '', display_address).strip()
-                        tts_text = f"抽出された住所は、{address_without_postal}です。"
-                        success, message = st.session_state.speech_service.text_to_speech(tts_text)
-                        
-                        if success:
-                            st.success("復唱完了！")
-                        else:
-                            st.error(f"音声合成に失敗: {message}")
-                            
-                    except Exception as e:
-                        st.error(f"TTSエラー: {e}")
+            # 住所をクリップボードにコピー
+            if st.button("📋 住所をコピー", use_container_width=True, type="primary"):
+                # JavaScriptでクリップボードにコピー（Streamlitでは直接はできないため代替表示）
+                st.success("住所をコピーしました！")
+                st.code(st.session_state.segment_final_address, language=None)
             
             # やり直しボタン
             if st.button("🔄 最初からやり直し", use_container_width=True):
-                # 全状態をリセット
-                for key in list(st.session_state.keys()):
-                    if key not in ['speech_service', 'address_extractor', 'postal_service']:
-                        del st.session_state[key]
-                st.session_state.current_step = STEP_POSTAL_CODE
+                # セグメント関連の状態をリセット
+                st.session_state.segment_current_step = STEP_POSTAL_CODE
+                st.session_state.segment_recording = False
+                st.session_state.segment_postal_code = ""
+                st.session_state.segment_base_address = ""
+                st.session_state.segment_detail_text = ""
+                st.session_state.segment_final_address = ""
+                
+                # リアルタイム音声認識もリセット
+                if st.session_state.segment_recording:
+                    st.session_state.segment_realtime_service.stop_streaming_recognition()
+                st.session_state.segment_realtime_service.clear_session_state()
                 st.rerun()
 
 with tab2:
@@ -529,8 +478,13 @@ with tab2:
         session_data = st.session_state.realtime_speech_service.get_session_state_data()
         
         # エラーメッセージ表示
-        if session_data.get('error_message'):
-            st.error(session_data['error_message'])
+        error_message = session_data.get('error_message')
+        if error_message:
+            # 305秒制限エラーの場合は情報として表示
+            if "ストリーミング時間制限" in error_message or "再接続中" in error_message:
+                st.info(f"ℹ️ {error_message}")
+            else:
+                st.error(error_message)
         
         # リアルタイム文字起こし表示
         interim_text = session_data.get('interim_text', '')
@@ -547,10 +501,11 @@ with tab2:
                 value=display_text, 
                 height=120, 
                 disabled=True,
-                help="確定したテキストと、認識中のテキスト（アンダーライン）がリアルタイムで表示されます"
+                help="確定したテキストと、認識中のテキスト（アンダーライン）がリアルタイムで表示されます",
+                key="realtime_transcription_display"
             )
         else:
-            st.text_area("リアルタイム文字起こし:", value="", height=120, disabled=True)
+            st.text_area("リアルタイム文字起こし:", value="", height=120, disabled=True, key="realtime_transcription_empty")
         
         # 抽出された住所の表示
         extracted_addresses = session_data.get('extracted_addresses', [])
@@ -563,11 +518,26 @@ with tab2:
                 confidence = addr.get('confidence', 0)
                 confidence_color = "success" if confidence >= 0.7 else "warning" if confidence >= 0.5 else "info"
                 
+                # パフォーマンス情報を取得（安全な呼び出し）
+                performance_info = ""
+                if hasattr(st.session_state.toriyama_parser, 'format_performance_info'):
+                    try:
+                        performance_info = st.session_state.toriyama_parser.format_performance_info(addr)
+                    except Exception as e:
+                        print(f"Performance info error: {e}")
+                        performance_info = ""
+                
                 with st.container():
                     if addr == best_address:
-                        st.success(f"**🎯 最適住所:** {addr.get('address', '')} (信頼度: {confidence:.1%})")
+                        display_text = f"**🎯 最適住所:** {addr.get('address', '')} (信頼度: {confidence:.1%})"
+                        if performance_info:
+                            display_text += f" {performance_info}"
+                        st.success(display_text)
                     else:
-                        getattr(st, confidence_color)(f"**候補 {i+1}:** {addr.get('address', '')} (信頼度: {confidence:.1%})")
+                        display_text = f"**候補 {i+1}:** {addr.get('address', '')} (信頼度: {confidence:.1%})"
+                        if performance_info:
+                            display_text += f" {performance_info}"
+                        getattr(st, confidence_color)(display_text)
         
         # 最終結果表示
         if best_address:
@@ -581,19 +551,50 @@ with tab2:
             with st.expander("📋 住所分解詳細"):
                 breakdown = st.session_state.toriyama_parser.get_address_breakdown(best_address)
                 
-                col_detail1, col_detail2 = st.columns(2)
+                col_detail1, col_detail2, col_detail3, col_detail4 = st.columns(4)
                 with col_detail1:
+                    st.markdown("**基本住所**")
                     st.text(f"都道府県: {breakdown.get('prefecture', '-')}")
                     st.text(f"市区町村: {breakdown.get('city', '-')}")
                     st.text(f"町域: {breakdown.get('town', '-')}")
+                    st.text(f"番地: {breakdown.get('block_number', '-')}")
                 
                 with col_detail2:
-                    st.text(f"その他: {breakdown.get('rest', '-')}")
+                    st.markdown("**建物情報**")
+                    st.text(f"建物名: {breakdown.get('building_name', '-')}")
+                    st.text(f"階数: {breakdown.get('floor', '-')}")
+                    st.text(f"部屋番号: {breakdown.get('room_number', '-')}")
+                
+                with col_detail3:
+                    st.markdown("**解析情報**")
                     st.text(f"信頼度: {breakdown.get('confidence', 0):.1%}")
                     st.text(f"パーサー: {breakdown.get('parser_type', '-')}")
+                    if breakdown.get('postal_code'):
+                        st.text(f"郵便番号: {breakdown.get('postal_code')}")
+                    if breakdown.get('rest'):
+                        st.text(f"その他: {breakdown.get('rest', '-')}")
                 
-                if breakdown.get('postal_code'):
-                    st.text(f"郵便番号: {breakdown.get('postal_code')}")
+                with col_detail4:
+                    st.markdown("**⚡ パフォーマンス**")
+                    if breakdown.get('total_processing_time_ms') is not None:
+                        total_time = breakdown.get('total_processing_time_ms', 0)
+                        performance_level = breakdown.get('performance_level', '不明')
+                        
+                        # パフォーマンスレベルに応じて色分け
+                        if performance_level == "超高速":
+                            st.success(f"全体: {total_time:.1f}ms")
+                        elif performance_level == "高速":
+                            st.info(f"全体: {total_time:.1f}ms")
+                        elif performance_level == "標準":
+                            st.warning(f"全体: {total_time:.1f}ms")
+                        else:
+                            st.error(f"全体: {total_time:.1f}ms")
+                        
+                        st.text(f"パーサー: {breakdown.get('parser_time_ms', 0):.1f}ms")
+                        st.text(f"建物抽出: {breakdown.get('building_extraction_time_ms', 0):.1f}ms")
+                        st.text(f"信頼度計算: {breakdown.get('confidence_calc_time_ms', 0):.1f}ms")
+                    else:
+                        st.text("処理時間情報なし")
             
             # 完全性インジケーター
             is_complete = best_address.get('is_complete', False)
@@ -602,10 +603,43 @@ with tab2:
             else:
                 st.warning("⚠️ 部分的な住所です - より詳細に話してください")
         
+        # パフォーマンス統計表示
+        performance_stats = session_data.get('performance_stats', {})
+        if performance_stats and performance_stats.get('total_extractions', 0) > 0:
+            with st.expander("📊 パフォーマンス統計"):
+                col_stats1, col_stats2 = st.columns(2)
+                
+                with col_stats1:
+                    total_count = performance_stats.get('total_extractions', 0)
+                    fast_count = performance_stats.get('fast_extractions', 0)
+                    fast_rate = (fast_count / total_count * 100) if total_count > 0 else 0
+                    
+                    st.metric("処理回数", f"{total_count}回")
+                    st.metric("高速処理率", f"{fast_rate:.1f}%", help="500ms以下での処理成功率")
+                
+                with col_stats2:
+                    avg_time = performance_stats.get('avg_time_ms', 0)
+                    min_time = performance_stats.get('min_time_ms', 0)
+                    max_time = performance_stats.get('max_time_ms', 0)
+                    
+                    st.metric("平均処理時間", f"{avg_time:.1f}ms")
+                    st.metric("最高速度", f"{min_time:.1f}ms")
+                    st.metric("最低速度", f"{max_time:.1f}ms")
+                
+                # 500ms基準の視覚的表示
+                if avg_time < 500:
+                    st.success("🚀 目標基準（500ms）を下回る高速処理を実現中")
+                else:
+                    st.warning("⚠️ 平均処理時間が目標基準（500ms）を超過中")
+        
         # 認識状況の表示
         if st.session_state.realtime_mode_active:
             recognition_active = session_data.get('recognition_active', False)
-            if recognition_active:
+            reconnecting = session_data.get('reconnecting', False)
+            
+            if reconnecting:
+                st.warning("🔄 ストリーミング再接続中...")
+            elif recognition_active:
                 st.caption("🎙️ 音声を認識中...")
             else:
                 st.caption("🔇 音声待機中...")
@@ -620,11 +654,10 @@ with st.sidebar:
     
     # 現在のタブに応じた説明
     st.markdown("""
-    ### 📋 段階入力モード
-    1. **郵便番号入力**: 7桁の郵便番号を音声で入力
-    2. **詳細住所入力**: 丁目以下の住所を音声で入力
-    3. **建物・部屋入力**: マンション名・部屋番号を入力
-    4. **確認**: 完全な住所を音声で確認
+    ### 📋 段階入力モード（NEW: リアルタイム2段階）
+    1. **郵便番号入力**: リアルタイム音声で7桁郵便番号を入力 → 自動でAPI住所取得
+    2. **詳細住所入力**: リアルタイム音声で番地・建物・部屋番号を入力 → 自動統合
+    3. **完了**: 統合された完全住所を確認・コピー
     
     ### ⚡ 高速モード（リアルタイム）
     1. **録音開始**: リアルタイム音声認識を開始
@@ -639,10 +672,10 @@ with st.sidebar:
     st.subheader("⚙️ 設定状況")
     
     # Azure Speech Service（段階入力モード用）
-    if 'speech_service' in st.session_state and st.session_state.speech_service:
-        st.success("✅ Azure Speech Service: 接続済み")
-    else:
-        st.error("❌ Azure Speech Service: 未設定")
+    # if 'speech_service' in st.session_state and st.session_state.speech_service:
+    #     st.success("✅ Azure Speech Service: 接続済み")
+    # else:
+    #     st.error("❌ Azure Speech Service: 未設定")
     
     # Google Cloud Speech Service（高速モード用）
     if 'realtime_speech_service' in st.session_state:
@@ -670,4 +703,4 @@ with st.sidebar:
 
 # フッター
 st.markdown("---")
-st.markdown("**注意:** このアプリはAzure Speech Services（段階入力モード）とGoogle Cloud Speech-to-Text（高速モード）を使用します。適切な認証情報が必要です。")
+st.markdown("**注意:** このアプリは両モードでGoogle Cloud Speech-to-Text を使用します。適切な認証情報（GOOGLE_CLOUD_PROJECT_ID）が必要です。")

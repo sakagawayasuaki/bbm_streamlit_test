@@ -36,6 +36,11 @@ class RealtimeSpeechService:
         self.session_state_key_prefix = "realtime_"
         self.address_parser = None
         
+        # ストリーミング制限管理
+        self.streaming_start_time = None
+        self.max_streaming_duration = 295  # 295秒（Google Cloudの305秒制限より前に再接続）
+        self.auto_reconnect_enabled = True
+        
     def _audio_generator(self):
         """音声データのジェネレータ"""
         while self.recording:
@@ -103,6 +108,9 @@ class RealtimeSpeechService:
             
             self.recording = True
             
+            # ストリーミング開始時刻を記録
+            self.streaming_start_time = time.time()
+            
             # 音声録音スレッドを開始（Streamlitコンテキスト付与）
             self.audio_thread = threading.Thread(target=self._record_audio)
             add_script_run_ctx(self.audio_thread)
@@ -126,25 +134,55 @@ class RealtimeSpeechService:
             # ストリーミング認識の開始
             def run_recognition():
                 try:
-                    audio_generator = self._audio_generator()
-                    requests = (speech.StreamingRecognizeRequest(audio_content=chunk)
-                              for chunk in audio_generator)
-                    
-                    responses = self.client.streaming_recognize(streaming_config, requests)
-                    
-                    for response in responses:
-                        if not self.recording:
-                            break
-                            
-                        for result in response.results:
-                            if result.alternatives:
-                                transcript = result.alternatives[0].transcript
-                                is_final = result.is_final
-                                self._handle_recognition_result(transcript, is_final)
+                    while self.recording:
+                        # ストリーミング時間制限チェック
+                        if self._should_restart_streaming():
+                            print("Restarting streaming due to time limit...")
+                            self._restart_streaming()
+                            continue
+                        
+                        audio_generator = self._audio_generator()
+                        requests = (speech.StreamingRecognizeRequest(audio_content=chunk)
+                                  for chunk in audio_generator)
+                        
+                        responses = self.client.streaming_recognize(streaming_config, requests)
+                        
+                        for response in responses:
+                            if not self.recording:
+                                break
+                                
+                            # 再度時間制限チェック
+                            if self._should_restart_streaming():
+                                print("Breaking current streaming for restart...")
+                                break
+                                
+                            for result in response.results:
+                                if result.alternatives:
+                                    transcript = result.alternatives[0].transcript
+                                    is_final = result.is_final
+                                    self._handle_recognition_result(transcript, is_final)
+                        
+                        # ここで一度ストリーミングが終了した場合は再接続
+                        if self.recording and self.auto_reconnect_enabled:
+                            print("Streaming ended, restarting...")
+                            time.sleep(0.1)  # 短いポーズ
+                            self.streaming_start_time = time.time()  # タイマーリセット
                                 
                 except Exception as e:
-                    print(f"Speech recognition error: {e}")
-                    self._handle_recognition_error(str(e))
+                    error_msg = str(e)
+                    print(f"Speech recognition error: {error_msg}")
+                    
+                    # 305秒制限エラーの場合は自動再接続
+                    if "Exceeded maximum allowed stream duration" in error_msg or "400" in error_msg:
+                        if self.recording and self.auto_reconnect_enabled:
+                            print("Auto-restarting due to duration limit...")
+                            self._restart_streaming()
+                            # 再帰的に再開
+                            run_recognition()
+                        else:
+                            self._handle_recognition_error("ストリーミング時間制限に達しました。再接続中...")
+                    else:
+                        self._handle_recognition_error(error_msg)
             
             # 認識スレッドを開始（Streamlitコンテキスト付与）
             self.recognition_thread = threading.Thread(target=run_recognition)
@@ -169,7 +207,9 @@ class RealtimeSpeechService:
                 'best_address',
                 'recognition_active',
                 'last_update_time',
-                'error_message'
+                'error_message',
+                'performance_stats',
+                'reconnecting'
             ]
             
             for key in keys_to_init:
@@ -186,6 +226,16 @@ class RealtimeSpeechService:
                             st.session_state[full_key] = False
                         elif key in ['last_update_time']:
                             st.session_state[full_key] = time.time()
+                        elif key in ['performance_stats']:
+                            st.session_state[full_key] = {
+                                'total_extractions': 0,
+                                'avg_time_ms': 0,
+                                'min_time_ms': float('inf'),
+                                'max_time_ms': 0,
+                                'fast_extractions': 0  # 500ms以下の回数
+                            }
+                        elif key in ['reconnecting']:
+                            st.session_state[full_key] = False
                 except Exception as e:
                     print(f"Warning: Failed to initialize session state key '{full_key}': {e}")
                     # 基本的なフォールバック値を設定
@@ -245,7 +295,7 @@ class RealtimeSpeechService:
                 st.session_state[error_key] = f"Recognition error: {str(e)}"
     
     def _extract_addresses_from_text(self, text: str):
-        """テキストから住所を抽出してセッション状態に保存（スレッドセーフ実装）"""
+        """テキストから住所を抽出してセッション状態に保存（スレッドセーフ実装・パフォーマンス統計付き）"""
         try:
             if not self.address_parser or not text.strip():
                 return
@@ -254,6 +304,7 @@ class RealtimeSpeechService:
             
             addresses_key = f"{self.session_state_key_prefix}extracted_addresses"
             best_address_key = f"{self.session_state_key_prefix}best_address"
+            stats_key = f"{self.session_state_key_prefix}performance_stats"
             
             # セッション状態の安全な更新
             if addresses_key in st.session_state:
@@ -263,11 +314,73 @@ class RealtimeSpeechService:
                 if addresses:
                     best_address = self.address_parser.get_best_address(addresses)
                     st.session_state[best_address_key] = best_address
+                    
+                    # パフォーマンス統計を更新
+                    if stats_key in st.session_state and 'processing_time' in best_address:
+                        self._update_performance_stats(best_address['processing_time'])
                 else:
                     st.session_state[best_address_key] = None
                 
         except Exception as e:
             print(f"Error extracting addresses: {e}")
+    
+    def _update_performance_stats(self, timing: dict):
+        """パフォーマンス統計を更新"""
+        try:
+            stats_key = f"{self.session_state_key_prefix}performance_stats"
+            if stats_key not in st.session_state:
+                return
+                
+            stats = st.session_state[stats_key]
+            total_ms = timing.get('total_ms', 0)
+            
+            # 統計を更新
+            stats['total_extractions'] += 1
+            stats['min_time_ms'] = min(stats['min_time_ms'], total_ms)
+            stats['max_time_ms'] = max(stats['max_time_ms'], total_ms)
+            
+            # 平均時間を計算
+            old_avg = stats['avg_time_ms']
+            count = stats['total_extractions']
+            stats['avg_time_ms'] = (old_avg * (count - 1) + total_ms) / count
+            
+            # 500ms以下の高速処理回数をカウント
+            if total_ms < 500:
+                stats['fast_extractions'] += 1
+            
+            st.session_state[stats_key] = stats
+            
+        except Exception as e:
+            print(f"Error updating performance stats: {e}")
+    
+    def _should_restart_streaming(self) -> bool:
+        """ストリーミングを再開すべきかチェック"""
+        if not self.streaming_start_time or not self.auto_reconnect_enabled:
+            return False
+        
+        elapsed = time.time() - self.streaming_start_time
+        return elapsed >= self.max_streaming_duration
+    
+    def _restart_streaming(self):
+        """ストリーミングを再開"""
+        try:
+            # セッション状態にメッセージを設定
+            reconnect_key = f"{self.session_state_key_prefix}reconnecting"
+            if reconnect_key in st.session_state:
+                st.session_state[reconnect_key] = True
+            
+            # タイマーをリセット
+            self.streaming_start_time = time.time()
+            
+            # 短い待機（音声キューをクリア）
+            time.sleep(0.2)
+            
+            # 再接続完了
+            if reconnect_key in st.session_state:
+                st.session_state[reconnect_key] = False
+                
+        except Exception as e:
+            print(f"Error during streaming restart: {e}")
     
     def _handle_recognition_error(self, error_message: str):
         """認識エラーを処理"""
@@ -279,8 +392,12 @@ class RealtimeSpeechService:
         """リアルタイム音声認識を停止"""
         self.recording = False
         
+        # タイマーをリセット
+        self.streaming_start_time = None
+        
         # セッション状態を更新
         st.session_state[f"{self.session_state_key_prefix}recognition_active"] = False
+        st.session_state[f"{self.session_state_key_prefix}reconnecting"] = False
         
         # 音声キューに終了シグナルを送信
         self.audio_queue.put(None)
@@ -312,12 +429,12 @@ class RealtimeSpeechService:
         st.session_state[f"{self.session_state_key_prefix}recognition_active"] = False
     
     def get_session_state_data(self) -> dict:
-        """現在のセッション状態データを取得"""
+        """現在のセッション状態データを取得（パフォーマンス統計含む）"""
         data = {}
         keys = [
             'interim_text', 'final_text', 'all_final_text', 
             'extracted_addresses', 'best_address', 'recognition_active',
-            'last_update_time', 'error_message'
+            'last_update_time', 'error_message', 'performance_stats', 'reconnecting'
         ]
         
         for key in keys:
