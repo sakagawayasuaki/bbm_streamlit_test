@@ -35,22 +35,7 @@ with tab1:
     STEP_DETAIL_ADDRESS = "detail_address"
     STEP_COMPLETE = "complete"
 
-    # リアルタイム音声認識サービスの初期化
-    if 'segment_realtime_service' not in st.session_state:
-        try:
-            with st.spinner('段階入力用音声認識サービスを初期化中...'):
-                # auto_warm_up=Trueで暖気付き初期化
-                st.session_state.segment_realtime_service = RealtimeSpeechService(auto_warm_up=True)
-                st.session_state.postal_service = PostalCodeService()
-                
-            st.success("✅ 段階入力用音声認識サービス準備完了")
-            
-        except ValueError as e:
-            st.error(f"Google Cloud Speech Service の設定エラー: {e}")
-            st.info("Google Cloud プロジェクトとAPI認証を設定してください。")
-            st.stop()
-    
-    # セッション状態の初期化
+    # セッション状態の初期化（サービス初期化より前に実行）
     if 'segment_current_step' not in st.session_state:
         st.session_state.segment_current_step = STEP_POSTAL_CODE
     if 'segment_recording' not in st.session_state:
@@ -75,6 +60,59 @@ with tab1:
     # 新規: UI最適化用フラグ
     if 'segment_button_just_clicked' not in st.session_state:
         st.session_state.segment_button_just_clicked = False
+    
+    # 新規: 自動暖気用フラグ
+    if 'segment_auto_warmup_completed' not in st.session_state:
+        st.session_state.segment_auto_warmup_completed = False
+    if 'segment_auto_warmup_in_progress' not in st.session_state:
+        st.session_state.segment_auto_warmup_in_progress = False
+    if 'segment_services_ready' not in st.session_state:
+        st.session_state.segment_services_ready = False
+
+    # リアルタイム音声認識サービスの初期化
+    if 'segment_realtime_service' not in st.session_state:
+        try:
+            with st.spinner('段階入力用音声認識サービスを初期化中...'):
+                # auto_warm_up=Trueで暖気付き初期化
+                st.session_state.segment_realtime_service = RealtimeSpeechService(auto_warm_up=True)
+                st.session_state.postal_service = PostalCodeService()
+                
+            st.success("✅ 段階入力用音声認識サービス準備完了")
+            
+            # 自動暖気実行（UI重複防止のため）
+            if not st.session_state.segment_auto_warmup_completed and not st.session_state.segment_auto_warmup_in_progress:
+                st.session_state.segment_auto_warmup_in_progress = True
+                with st.spinner('🔥 音声認識サービスを暖気中...（初回録音の高速化のため）'):
+                    try:
+                        # 1秒間の非表示録音テストで完全暖気
+                        success = st.session_state.segment_realtime_service.start_streaming_with_streamlit()
+                        if success:
+                            st.session_state.segment_recording = True
+                            time.sleep(1.0)  # 1秒間のテスト録音
+                            st.session_state.segment_realtime_service.stop_streaming_recognition()
+                            st.session_state.segment_recording = False
+                            st.session_state.segment_realtime_service.clear_session_state()
+                            
+                        st.session_state.segment_auto_warmup_completed = True
+                        st.session_state.segment_services_ready = True
+                        st.success("🚀 音声認識サービス暖気完了 - 高速録音の準備ができました")
+                        
+                    except Exception as e:
+                        st.warning(f"⚠️ 暖気処理に失敗しましたが、通常動作は可能です: {e}")
+                        st.session_state.segment_services_ready = True
+                    finally:
+                        st.session_state.segment_auto_warmup_in_progress = False
+                        time.sleep(0.5)  # UI安定化のため
+                        st.rerun()
+            
+        except ValueError as e:
+            st.error(f"Google Cloud Speech Service の設定エラー: {e}")
+            st.info("Google Cloud プロジェクトとAPI認証を設定してください。")
+            st.stop()
+    else:
+        # 既存のサービスが存在する場合、暖気状態を確認
+        if not st.session_state.segment_services_ready and not st.session_state.segment_auto_warmup_in_progress:
+            st.session_state.segment_services_ready = True  # フォールバック: 既存サービスを有効とみなす
 
     # ステップ表示
     progress_steps = ["🔢 郵便番号・基本住所取得", "🏠 詳細住所・建物情報入力", "✅ 完了"]
@@ -100,6 +138,18 @@ with tab1:
     # ステップ1: 郵便番号入力とAPI住所取得
     if st.session_state.segment_current_step == STEP_POSTAL_CODE:
         st.subheader("🔢 ステップ1: 郵便番号をリアルタイム音声で入力")
+        
+        # 暖気中は初期化中表示
+        if st.session_state.segment_auto_warmup_in_progress:
+            st.info("🔥 音声認識サービスを暖気中です。しばらくお待ちください...")
+            st.rerun()
+            st.stop()
+        
+        # サービス準備未完了時は待機表示
+        if not st.session_state.segment_services_ready:
+            st.warning("⏳ 音声認識サービスの準備中です...")
+            st.rerun()
+            st.stop()
         
         col1, col2 = st.columns([1, 2])
         
