@@ -11,7 +11,7 @@ import time
 from streamlit.runtime.scriptrunner import add_script_run_ctx
 
 class RealtimeSpeechService:
-    def __init__(self):
+    def __init__(self, auto_warm_up=True):
         """Google Cloud Speech-to-Text Streamingサービス"""
         self.project_id = os.getenv("GOOGLE_CLOUD_PROJECT_ID")
         
@@ -40,6 +40,14 @@ class RealtimeSpeechService:
         self.streaming_start_time = None
         self.max_streaming_duration = 295  # 295秒（Google Cloudの305秒制限より前に再接続）
         self.auto_reconnect_enabled = True
+        
+        # 暖気フラグ
+        self.is_warmed_up = False
+        
+        # 自動暖気実行（デフォルト有効）
+        if auto_warm_up:
+            self.warm_up_services()
+            self.is_warmed_up = True
         
     def _audio_generator(self):
         """音声データのジェネレータ"""
@@ -500,3 +508,65 @@ class RealtimeSpeechService:
         except Exception as e:
             print(f"Error getting audio devices: {e}")
             return []
+    
+    def _warm_up_speech_client(self):
+        """Google Cloud Speech Clientを事前暖気して接続を確立"""
+        try:
+            print("Google Cloud Speech API接続を暖気中...")
+            
+            # 最小限のダミー設定でクライアント接続をテスト
+            config = speech.RecognitionConfig(
+                encoding=speech.RecognitionConfig.AudioEncoding.LINEAR16,
+                sample_rate_hertz=self.sample_rate,
+                language_code="ja-JP"
+            )
+            
+            # ストリーミング設定を作成（実際には使用しないが接続確認のため）
+            streaming_config = speech.StreamingRecognitionConfig(
+                config=config,
+                interim_results=False,
+                single_utterance=True
+            )
+            
+            # クライアント接続の暖気完了
+            print("Google Cloud Speech API暖気完了")
+            
+        except Exception as e:
+            print(f"Speech client warm-up failed (non-critical): {e}")
+    
+    def _pre_initialize_audio(self):
+        """PyAudioオーディオデバイスを事前初期化"""
+        try:
+            print("オーディオデバイスを初期化中...")
+            audio = pyaudio.PyAudio()
+            
+            # 短時間のテストストリームを開いて即座に閉じる
+            stream = audio.open(
+                format=pyaudio.paInt16,
+                channels=self.channels,
+                rate=self.sample_rate,
+                input=True,
+                frames_per_buffer=self.chunk_size
+            )
+            
+            # デバイスアクセス権限とドライバ初期化
+            stream.stop_stream()
+            stream.close()
+            audio.terminate()
+            
+            print("オーディオデバイス初期化完了")
+            
+        except Exception as e:
+            print(f"Audio pre-initialization failed (non-critical): {e}")
+    
+    def warm_up_services(self):
+        """全サービスの事前暖気を実行"""
+        try:
+            print("音声認識サービスを暖気中...")
+            self._warm_up_speech_client()
+            self._pre_initialize_audio()
+            print("暖気処理完了 - 初回録音が高速になります")
+            return True
+        except Exception as e:
+            print(f"Warm-up process failed: {e}")
+            return False

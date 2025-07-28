@@ -50,10 +50,6 @@ class PostalCodeService:
             # 7桁ちょうどの場合のみ有効
             numbers_str = ''.join(numbers)
             return numbers_str
-        elif len(numbers) == 6:
-            # 6桁の場合、先頭に0を追加（一部の郵便番号対応）
-            numbers_str = '0' + ''.join(numbers)
-            return numbers_str
         
         return None
     
