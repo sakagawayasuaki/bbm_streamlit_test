@@ -8,6 +8,9 @@ from typing import Optional, Callable
 from google.cloud import speech
 import io
 import time
+import json
+import tempfile
+import atexit
 from streamlit.runtime.scriptrunner import add_script_run_ctx
 
 class RealtimeSpeechService:
@@ -17,6 +20,9 @@ class RealtimeSpeechService:
         
         if not self.project_id:
             raise ValueError("GOOGLE_CLOUD_PROJECT_ID environment variable not found")
+        
+        # Google Cloud認証の設定
+        self._setup_google_credentials()
         
         # 音声設定
         self.sample_rate = 16000
@@ -570,3 +576,71 @@ class RealtimeSpeechService:
         except Exception as e:
             print(f"Warm-up process failed: {e}")
             return False
+    
+    def _setup_google_credentials(self):
+        """Google Cloud認証を設定（環境変数またはJSONファイル）"""
+        try:
+            # 方法1: 環境変数からJSONを読み取り（デプロイ環境用）
+            credentials_json = os.getenv("GOOGLE_APPLICATION_CREDENTIALS_JSON")
+            if credentials_json:
+                print("環境変数からGoogle Cloud認証情報を設定中...")
+                
+                # JSONの妥当性をチェック
+                try:
+                    json.loads(credentials_json)
+                except json.JSONDecodeError as e:
+                    raise ValueError(f"GOOGLE_APPLICATION_CREDENTIALS_JSON is not valid JSON: {e}")
+                
+                # 一時ファイルを作成
+                temp_file = tempfile.NamedTemporaryFile(
+                    mode='w', 
+                    suffix='.json', 
+                    delete=False,
+                    prefix='google_credentials_'
+                )
+                
+                try:
+                    temp_file.write(credentials_json)
+                    temp_file.flush()
+                    temp_file.close()
+                    
+                    # 環境変数に一時ファイルパスを設定
+                    os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = temp_file.name
+                    print(f"Google Cloud認証情報を一時ファイルに設定: {temp_file.name}")
+                    
+                    # プロセス終了時に一時ファイルを削除
+                    atexit.register(self._cleanup_temp_credentials_file, temp_file.name)
+                    
+                except Exception as e:
+                    # エラー時は一時ファイルを削除
+                    try:
+                        os.unlink(temp_file.name)
+                    except:
+                        pass
+                    raise ValueError(f"Failed to create temporary credentials file: {e}")
+                
+                return
+            
+            # 方法2: 既存のGOOGLE_APPLICATION_CREDENTIALS環境変数（JSONファイルパス）
+            existing_credentials = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
+            if existing_credentials:
+                if os.path.exists(existing_credentials):
+                    print(f"既存のGoogle Cloud認証ファイルを使用: {existing_credentials}")
+                    return
+                else:
+                    print(f"警告: 指定された認証ファイルが見つかりません: {existing_credentials}")
+            
+            # 方法3: デフォルト認証（gcloud CLI or 自動認証）
+            print("Google Cloud Application Default Credentials を使用")
+            
+        except Exception as e:
+            raise ValueError(f"Google Cloud認証の設定に失敗しました: {e}")
+    
+    def _cleanup_temp_credentials_file(self, file_path: str):
+        """一時認証ファイルをクリーンアップ"""
+        try:
+            if os.path.exists(file_path):
+                os.unlink(file_path)
+                print(f"一時認証ファイルを削除: {file_path}")
+        except Exception as e:
+            print(f"一時認証ファイルの削除に失敗: {e}")

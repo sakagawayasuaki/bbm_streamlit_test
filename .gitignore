@@ -85,3 +85,5 @@ ENV/
 .mypy_cache/
 .dmypy.json
 dmypy.json
+
+MIGRATION_GUIDE.md
