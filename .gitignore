@@ -87,3 +87,4 @@ ENV/
 dmypy.json
 
 MIGRATION_GUIDE.md
+GEMINI.md

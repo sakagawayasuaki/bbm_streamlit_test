@@ -5,5 +5,8 @@ numpy>=1.24.0
 python-dotenv>=1.0.0
 requests>=2.31.0
 google-cloud-speech>=2.33.0
-pyaudio>=0.2.11
+
 japanese-address-parser-py>=0.2.6
+streamlit-webrtc>=0.45.0
+aiortc>=1.6.0
+av>=10.0.0
