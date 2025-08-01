@@ -82,12 +82,14 @@ with tab1:
         with col1:
             st.markdown("**🎤 リアルタイム音声認識**")
             st.info("📝 **使い方**: 下のコンポーネントが「RECORDING」になったら、7桁の郵便番号を話してください。")
-            is_recording = st.session_state.segment_webrtc_service.run_component()
-
-            if is_recording:
-                st.info("🔴 **録音中** - 郵便番号を話してください")
+            if not (st.session_state.segment_postal_code and st.session_state.segment_base_address):
+                is_recording = st.session_state.segment_webrtc_service.run_component()
+                if is_recording:
+                    st.info("🔴 **録音中** - 郵便番号を話してください")
+                else:
+                    st.info("⏸️ **待機中** - マイクの使用を許可してください")
             else:
-                st.info("⏸️ **待機中** - マイクの使用を許可してください")
+                is_recording = False
 
             if st.session_state.segment_postal_code and st.session_state.segment_base_address:
                 st.markdown("### ✅ 確認")
@@ -96,6 +98,11 @@ with tab1:
                     duration_ms = st.session_state.segment_postal_lookup_duration * 1000
                     confirmation_text += f"\n**住所取得時間:** {duration_ms:.1f}ms"
                 st.info(confirmation_text)
+
+                # 音声認識を停止
+                if st.session_state.segment_webrtc_service.is_streaming:
+                    st.session_state.segment_webrtc_service.stop_streaming_recognition()
+                    st.info("🛑 **録音自動停止** - 郵便番号の取得が完了しました")
                 
                 col_next, col_retry = st.columns(2)
                 with col_next:
@@ -124,18 +131,18 @@ with tab1:
             
             # 暫定結果の表示
             if interim_text:
-                st.markdown("**🔄 暫定結果 (Interim):**")
+                st.markdown("**🔄 暫定結果 :**")
                 st.warning(f"🎤 {interim_text}")
             else:
-                st.markdown("**🔄 暫定結果 (Interim):**")
+                st.markdown("**🔄 暫定結果 :**")
                 st.info("音声認識中...")
             
             # 確定結果の表示
             if final_text:
-                st.markdown("**✅ 確定結果 (Final):**")
+                st.markdown("**✅ 確定結果 :**")
                 st.success(final_text)
             else:
-                st.markdown("**✅ 確定結果 (Final):**")
+                st.markdown("**✅ 確定結果 :**")
                 st.info("まだ確定した音声認識結果がありません")
                         
             # # 統合表示（従来の形式も残す）
@@ -203,18 +210,18 @@ with tab1:
                         
             # 暫定結果の表示
             if interim_text:
-                st.markdown("**🔄 暫定結果 (Interim):**")
+                st.markdown("**🔄 暫定結果 :**")
                 st.warning(f"🎤 {interim_text}")
             else:
-                st.markdown("**🔄 暫定結果 (Interim):**")
+                st.markdown("**🔄 暫定結果 :**")
                 st.info("音声認識中...")
             
             # 確定結果の表示
             if final_text:
-                st.markdown("**✅ 確定結果 (Final):**")
+                st.markdown("**✅ 確定結果 :**")
                 st.success(final_text)
             else:
-                st.markdown("**✅ 確定結果 (Final):**")
+                st.markdown("**✅ 確定結果 :**")
                 st.info("まだ確定した音声認識結果がありません")
             
             # # 統合表示（従来の形式も残す）
@@ -293,18 +300,18 @@ with tab2:
         
         # 暫定結果の表示
         if interim_text:
-            st.markdown("**🔄 暫定結果 (Interim):**")
+            st.markdown("**🔄 暫定結果 :**")
             st.warning(f"🎤 {interim_text}")
         else:
-            st.markdown("**🔄 暫定結果 (Interim):**")
+            st.markdown("**🔄 暫定結果 :**")
             st.info("音声認識中...")
 
         # 確定結果の表示
         if final_text:
-            st.markdown("**✅ 確定結果 (Final):**")
+            st.markdown("**✅ 確定結果 :**")
             st.success(final_text)
         else:
-            st.markdown("**✅ 確定結果 (Final):**")
+            st.markdown("**✅ 確定結果 :**")
             st.info("まだ確定した音声認識結果がありません")        
         
         # # 統合表示（従来の形式も残す）
