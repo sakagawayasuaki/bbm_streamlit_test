@@ -5,7 +5,7 @@ import queue
 import threading
 import numpy as np
 import streamlit as st
-from typing import Optional, Dict, Any
+from typing import Dict, Any
 from google.cloud import speech
 import tempfile
 import atexit
@@ -19,6 +19,7 @@ class WebRTCAudioProcessor:
         self.audio_queue = queue.Queue()
         self.is_recording = False
         self.resampler = av.AudioResampler(format='s16', layout='mono', rate=sample_rate)
+        self.latest_volume = 0.0  # 追加: 最新ボリューム値
         
     def recv(self, frame: av.AudioFrame) -> av.AudioFrame:
         """WebRTCから音声フレームを受信"""
@@ -27,7 +28,16 @@ class WebRTCAudioProcessor:
                 # 音声フレームをリサンプリング
                 resampled_frames = self.resampler.resample(frame)
                 for resampled_frame in resampled_frames:
-                    self.audio_queue.put(resampled_frame.to_ndarray().tobytes())
+                    audio_data = resampled_frame.to_ndarray()
+                    self.audio_queue.put(audio_data.tobytes())
+                    
+                    # ボリューム計算（16-bit音声データ用に正規化）
+                    if audio_data.size > 0:
+                        # 16-bit音声データを正規化してRMS計算
+                        normalized_audio = audio_data.astype(np.float32) / 32768.0
+                        rms = np.sqrt(np.mean(np.square(normalized_audio)))
+                        # 音量を0-1の範囲にスケール
+                        self.latest_volume = float(min(rms * 10, 1.0))
             except Exception as e:
                 print(f"WebRTC音声フレーム処理エラー: {e}")
                 print(f"Received audio frame (size: {len(resampled_frame.to_ndarray().tobytes())} bytes)")
@@ -193,7 +203,11 @@ class WebRTCSpeechService:
                 model="latest_short",
             )
             streaming_config = speech.StreamingRecognitionConfig(
-                config=config, interim_results=True
+                config=config,
+                single_utterance=False,
+                interim_results=True,
+                # max_duration={"seconds": 300},  # 最大5分間の連続認識
+                # 音声検出タイムアウトの設定
             )
             
             requests = (
@@ -201,21 +215,48 @@ class WebRTCSpeechService:
                 for chunk in self.audio_processor.audio_generator()
             )
             responses = self.client.streaming_recognize(streaming_config, requests)
-            
+            should_restart = False
             for response in responses:
-                print(f"Received response from Google Speech-to-Text: {response}")
-                if not self.is_streaming: break
+                print("=== [DEBUG] New response received ===")
+                print("response:", response)
+                print("response.results:", response.results)
+                print("response.speech_event_type:", getattr(response, "speech_event_type", None))
+                print("response.error:", getattr(response, "error", None))
+                print("response.is_final (any):", any([getattr(r, "is_final", None) for r in response.results]))
+                ############# is_final=false → true 時の処理  
+                # if getattr(response, "speech_event_type", None) == 1:  # END_OF_SINGLE_UTTERANCE
+                #     print("[DEBUG] END_OF_SINGLE_UTTERANCE detected, restarting stream")
+                #     break
+                if not self.is_streaming: 
+                    print("response loop: self.is_streaming = ", self.is_streaming)
+                    break
                 if self._should_restart_streaming():
                     self._handle_recognition_error("ストリーミング時間制限（305秒）に達しました。")
                     break
                 
                 for result in response.results:
+                    print("  [DEBUG] result:", result)
+                    print("  [DEBUG] result.is_final:", getattr(result, "is_final", None))
+                    print("  [DEBUG] result.alternatives:", getattr(result, "alternatives", None))
                     if result.alternatives:
                         self._handle_recognition_result(result.alternatives[0].transcript, result.is_final)
                         print(f"Processing recognition result: Transcript='{result.alternatives[0].transcript}', IsFinal={result.is_final}")
-        
+                        if result.is_final:
+                            print("[DEBUG] is_final=True detected, will restart stream after handling result")
+                            should_restart = True
+                            break # break inner for-loop
+                if should_restart:
+                    break  # break outer for-loop    
+            print("[DEBUG] Google STT streaming responses loop exited (stream ended or closed)")            
         except Exception as e:
             self._handle_recognition_error(f"認識エラー: {e}")
+            print(f"[DEBUG] Exception in recognition thread: {e}")
+        finally:
+            # ストリームが切れても録音中なら再起動
+            if self.is_streaming and self.audio_processor.is_recording:
+                print("[DEBUG] Restarting recognition thread due to stream end")
+                self.recognition_thread = threading.Thread(target=self._run_recognition_thread)
+                self.recognition_thread.start()
 
     def _should_restart_streaming(self) -> bool:
         """ストリーミングを再開すべきかチェック"""
@@ -235,6 +276,7 @@ class WebRTCSpeechService:
 
     def _handle_recognition_result(self, transcript: str, is_final: bool):
         """音声認識結果を処理（スレッド安全）"""
+        print(f"[DEBUG] is_final={is_final}, self.is_streaming={self.is_streaming}, audio_processor.is_recording={self.audio_processor.is_recording}")
         print(f"[Thread-{threading.get_ident()}] Handling recognition result: '{transcript}', is_final={is_final}")
         
         with self._data_lock:
@@ -319,6 +361,7 @@ class WebRTCSpeechService:
             shared_copy = self._shared_data.copy()
         
         print(f"[Main-Thread] Shared data: final='{shared_copy['all_final_text']}', interim='{shared_copy['interim_text']}'")
+        print(f"[DEBUG] self.is_streaming={self.is_streaming}, audio_processor.is_recording={self.audio_processor.is_recording}")
         
         # セッション状態を更新
         prefix = self.session_state_key_prefix
@@ -337,7 +380,8 @@ class WebRTCSpeechService:
             'interim_text': shared_copy['interim_text'],
             'extracted_addresses': shared_copy['extracted_addresses'],
             'best_address': shared_copy['best_address'],
-            'error_message': shared_copy['error_message']
+            'error_message': shared_copy['error_message'],
+            'mic_volume': getattr(self.audio_processor, 'latest_volume', 0.0),  # 追加
         }
         if shared_copy['performance_stats']:
             data['performance_stats'] = shared_copy['performance_stats']

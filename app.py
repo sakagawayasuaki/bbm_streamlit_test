@@ -267,7 +267,7 @@ with tab2:
         st.markdown("**🎤 リアルタイム音声認識**")
         st.info("📝 **使い方**: 下のコンポーネントが「RECORDING」になったら、住所を自然に話してください。")
         is_recording = st.session_state.fast_webrtc_service.run_component()
-
+        
         if is_recording:
             st.info("🔴 **録音中** - 住所を話してください")
         else:
@@ -280,6 +280,11 @@ with tab2:
     with col2:
         st.markdown("**📝 リアルタイム認識結果**")
         session_data = st.session_state.fast_webrtc_service.get_session_state_data()
+        
+        # マイク音量表示を追加（session_data定義後）
+        mic_volume = session_data.get('mic_volume', 0.0)
+        st.markdown("**🎚️ マイク音量**")
+        st.progress(min(int(mic_volume * 100), 100))
         if session_data.get('error_message'): st.error(session_data['error_message'])
 
         # 確定結果と暫定結果を分けて表示
