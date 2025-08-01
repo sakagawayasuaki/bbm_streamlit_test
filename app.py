@@ -81,7 +81,7 @@ with tab1:
         
         with col1:
             st.markdown("**🎤 リアルタイム音声認識**")
-            st.info("📝 **使い方**: 下のコンポーネントが「RECORDING」になったら、7桁の郵便番号を話してください。")
+            st.info("📝 **使い方**: 下のコンポーネントが「録音中」になったら、7桁の郵便番号を話してください。")
             if not (st.session_state.segment_postal_code and st.session_state.segment_base_address):
                 is_recording = st.session_state.segment_webrtc_service.run_component()
                 if is_recording:
@@ -94,9 +94,6 @@ with tab1:
             if st.session_state.segment_postal_code and st.session_state.segment_base_address:
                 st.markdown("### ✅ 確認")
                 confirmation_text = f"**郵便番号:** {st.session_state.segment_postal_code}\n**基本住所:** {st.session_state.segment_base_address}"
-                if st.session_state.segment_postal_lookup_duration is not None:
-                    duration_ms = st.session_state.segment_postal_lookup_duration * 1000
-                    confirmation_text += f"\n**住所取得時間:** {duration_ms:.1f}ms"
                 st.info(confirmation_text)
 
                 # 音声認識を停止
@@ -123,6 +120,11 @@ with tab1:
         with col2:
             st.markdown("**📝 リアルタイム認識結果**")
             session_data = st.session_state.segment_webrtc_service.get_session_state_data()
+            # マイク音量表示を追加（session_data定義後）
+            mic_volume = session_data.get('mic_volume', 0.0)
+            st.markdown("**🎚️ マイク音量**")
+            st.progress(min(int(mic_volume * 100), 100))
+            if session_data.get('error_message'): st.error(session_data['error_message'])
             if session_data.get('error_message'): st.error(session_data['error_message'])
 
             # 確定結果と暫定結果を分けて表示
@@ -151,11 +153,11 @@ with tab1:
             # st.text_area("リアルタイム文字起こし:", value=display_text, height=60, disabled=True, key="step1_transcription")
 
             if session_data.get('all_final_text') and not st.session_state.segment_postal_code:
+                start_time = time.time()
                 extracted_postal = st.session_state.postal_service.extract_postal_code(session_data['all_final_text'])
                 if extracted_postal:
                     st.session_state.segment_postal_code = extracted_postal
                     st.success(f"✅ **郵便番号を認識:** {extracted_postal}")
-                    start_time = time.time()
                     with st.spinner('住所を検索中...'):
                         address_result = st.session_state.postal_service.get_address_by_postal_code(extracted_postal)
                         if address_result['success']:
@@ -167,7 +169,9 @@ with tab1:
                             st.error(f"住所検索エラー: {address_result['error']}")
             
             if st.session_state.segment_postal_code:
-                st.markdown("### 📍 取得した情報")
+                if st.session_state.segment_postal_lookup_duration is not None:
+                    duration_ms = st.session_state.segment_postal_lookup_duration * 1000
+                st.markdown(f"##### 📍 郵便番号を正規表現で抽出 ＆ APIで取得した住所情報 （住所取得時間: {duration_ms:.1f}ms）")
                 st.code(f"郵便番号: {st.session_state.segment_postal_code}\n基本住所: {st.session_state.segment_base_address}", language=None)
 
             if is_recording: time.sleep(0.1); st.rerun()
@@ -180,7 +184,7 @@ with tab1:
         
         with col1:
             st.markdown("**🎤 リアルタイム音声認識**")
-            st.info("📝 **使い方**: 下のコンポーネントが「RECORDING」になったら、番地・建物名・部屋番号を話してください。")
+            st.info("📝 **使い方**: 下のコンポーネントが「録音中」になったら、番地・建物名・部屋番号を話してください。")
             is_recording = st.session_state.segment_webrtc_service.run_component()
 
             if is_recording:
@@ -202,6 +206,11 @@ with tab1:
         with col2:
             st.markdown("**📝 リアルタイム認識結果**")
             session_data = st.session_state.segment_webrtc_service.get_session_state_data()
+            # マイク音量表示を追加（session_data定義後）
+            mic_volume = session_data.get('mic_volume', 0.0)
+            st.markdown("**🎚️ マイク音量**")
+            st.progress(min(int(mic_volume * 100), 100))
+            if session_data.get('error_message'): st.error(session_data['error_message'])
             if session_data.get('error_message'): st.error(session_data['error_message'])
 
             # 確定結果と暫定結果を分けて表示
@@ -234,9 +243,9 @@ with tab1:
                 if cleaned_text != st.session_state.segment_detail_text:
                     st.session_state.segment_detail_text = cleaned_text
                 
-                st.markdown("### 🧹 クリーンアップ後のテキスト")
+                st.markdown("##### 🧹 スペース削除後のテキスト")
                 st.code(cleaned_text, language=None)
-                st.markdown("### 📍 完成予定の住所")
+                st.markdown("##### 📍 完成予定の住所")
                 st.code(f"{st.session_state.segment_postal_code} {st.session_state.segment_base_address}{cleaned_text}", language=None)
 
             if is_recording: time.sleep(0.1); st.rerun()
@@ -272,7 +281,7 @@ with tab2:
     
     with col1:
         st.markdown("**🎤 リアルタイム音声認識**")
-        st.info("📝 **使い方**: 下のコンポーネントが「RECORDING」になったら、住所を自然に話してください。")
+        st.info("📝 **使い方**: 下のコンポーネントが「録音中」になったら、住所を自然に話してください。")
         is_recording = st.session_state.fast_webrtc_service.run_component()
         
         if is_recording:
@@ -321,8 +330,8 @@ with tab2:
 
         best_address = session_data.get('best_address')
         if best_address:
-            st.markdown("--->")
-            st.markdown("### 📍 リアルタイム抽出結果")
+            # st.markdown("--->")
+            st.markdown("##### 📍 リアルタイム抽出結果")
             st.code(best_address.get('address', ''), language=None)
             if 'processing_time' in best_address:
                 st.info(f"⏱️ 処理時間: {best_address['processing_time'].get('total_ms', 0):.1f}ms")
